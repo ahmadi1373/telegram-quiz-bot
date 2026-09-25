@@ -92,3 +92,8 @@ const server = http.createServer((req, res) => {
 
     return;
   }
+});
+
+server.listen(PORT, "0.0.0.0", () => {
+  console.log(`Telegram Quiz Bot is running on port ${PORT}`);
+});
