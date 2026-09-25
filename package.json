@@ -1,0 +1,12 @@
+{
+  "name": "telegram-quiz-bot",
+  "version": "1.0.0",
+  "description": "Telegram Quiz Bot",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
