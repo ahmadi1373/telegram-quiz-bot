@@ -1,0 +1,23 @@
+name: Telegram Daily Quiz
+
+on:
+  schedule:
+    - cron: "30 3 * * *"
+  workflow_dispatch:
+
+jobs:
+  send-quiz:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Send quiz to Telegram
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
+        run: |
+          curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendPoll" \
+            -d chat_id="${CHAT_ID}" \
+            --data-urlencode question="کدام دارو مهارکننده ACE است؟" \
+            --data-urlencode options='["انالاپریل","آملودیپین","فوروزماید","پروپرانولول"]' \
+            -d type="quiz" \
+            -d correct_option_id=0
