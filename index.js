@@ -7,14 +7,15 @@ const API_KEY = process.env.API_KEY;
 const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || "";
 const ADMIN_USER_ID = "5106935362";
 
-if (!BOT_TOKEN) {
-  console.error("BOT_TOKEN is missing");
+if (!BOT_TOKEN || !CHAT_ID || !API_KEY || !WEBHOOK_SECRET) {
+  console.error("Required environment variables are missing");
   process.exit(1);
 }
 
 const polls = new Map();
 const answers = new Map();
 const scores = new Map();
+const pendingQuiz = new Map();
 
 function nameOf(user) {
   return [user.first_name, user.last_name]
@@ -71,7 +72,9 @@ function changeScore(user, delta, date) {
       Math.max(0, (record[period].get(key) || 0) + delta)
     );
   }
-}function leaderboard(period) {
+}
+
+function leaderboard(period) {
   const key = periodKeys()[period];
 
   const rows = [...scores.values()]
@@ -116,13 +119,10 @@ async function sendQuiz(data) {
   const result = await telegram("sendPoll", {
     chat_id: CHAT_ID,
     question: data.question,
-    options: data.options.map(x =>
-      typeof x === "string" ? { text: x } : x
-    ),
+    options: data.options.map(x => ({ text: x })),
     type: "quiz",
     is_anonymous: false,
-    correct_option_id: data.correct_option_id,
-    explanation: data.explanation || ""
+    correct_option_id: data.correct_option_id
   });
 
   polls.set(result.result.poll.id, {
@@ -138,7 +138,6 @@ async function handleUpdate(update) {
     const poll = polls.get(vote.poll_id);
 
     if (!poll || !vote.user) return;
-
     if (String(vote.user.id) === ADMIN_USER_ID) return;
 
     const key = `${vote.poll_id}:${vote.user.id}`;
@@ -168,13 +167,110 @@ async function handleUpdate(update) {
   }
 
   const message = update.message;
-  if (!message || !message.text) return;
+  if (!message || !message.text || !message.from) return;
 
-  if (CHAT_ID &&
-      String(message.chat.id) !== String(CHAT_ID)) return;
-
+  const userId = String(message.from.id);
   const command = message.text.trim()
     .split(/\s+/)[0].split("@")[0].toLowerCase();
+
+  // پیام خصوصی مدیر
+  if (message.chat.type === "private") {
+    if (userId !== ADMIN_USER_ID) return;
+
+    if (command === "/start") {
+      await telegram("sendMessage", {
+        chat_id: message.chat.id,
+        text:
+          "سلام داکتر صاحب احمدی!\n\n" +
+          "برای ساخت آزمون جدید دستور /newquiz را بفرست.\n" +
+          "برای لغو ساخت آزمون دستور /cancel را بفرست."
+      });
+      return;
+    }
+
+    if (command === "/cancel") {
+      pendingQuiz.delete(userId);
+      await telegram("sendMessage", {
+        chat_id: message.chat.id,
+        text: "ساخت آزمون لغو شد."
+      });
+      return;
+    }
+
+    if (command === "/newquiz") {
+      pendingQuiz.set(userId, true);
+
+      await telegram("sendMessage", {
+        chat_id: message.chat.id,
+        text:
+          "📝 آزمون جدید\n\n" +
+          "لطفاً معلومات را در ۶ خط بفرست:\n\n" +
+          "خط ۱: سؤال\n" +
+          "خط ۲ تا ۵: چهار گزینه\n" +
+          "خط ۶: شماره پاسخ درست (۱ تا ۴)\n\n" +
+          "مثال:\n" +
+          "پنی‌سیلین در کدام خانواده است؟\n" +
+          "ماکرولایدها\n" +
+          "بتالاکتام‌ها\n" +
+          "تتراسایکلین‌ها\n" +
+          "آمینوگلیکوزیدها\n" +
+          "۲"
+      });
+      return;
+    }
+
+    if (pendingQuiz.has(userId)) {
+      const lines = message.text.trim()
+        .split("\n")
+        .map(x => x.trim())
+        .filter(Boolean);
+
+      if (lines.length !== 6) {
+        await telegram("sendMessage", {
+          chat_id: message.chat.id,
+          text: "فرمت درست نیست. دقیقاً ۶ خط بفرست."
+        });
+        return;
+      }
+
+      const answerNumber = Number(lines[5]);
+
+      if (!Number.isInteger(answerNumber) ||
+          answerNumber < 1 || answerNumber > 4) {
+        await telegram("sendMessage", {
+          chat_id: message.chat.id,
+          text: "شماره پاسخ درست باید بین ۱ تا ۴ باشد."
+        });
+        return;
+      }
+
+      try {
+        await sendQuiz({
+          question: lines[0],
+          options: lines.slice(1, 5),
+          correct_option_id: answerNumber - 1
+        });
+
+        pendingQuiz.delete(userId);
+
+        await telegram("sendMessage", {
+          chat_id: message.chat.id,
+          text: "✅ آزمون با موفقیت در گروه منتشر شد."
+        });
+      } catch (error) {
+        await telegram("sendMessage", {
+          chat_id: message.chat.id,
+          text: "خطا در انتشار آزمون: " + error.message
+        });
+      }
+      return;
+    }
+
+    return;
+  }
+
+  // رتبه‌بندی در گروه
+  if (String(message.chat.id) !== String(CHAT_ID)) return;
 
   const periods = {
     "/daily": ["daily", "رتبه‌بندی روزانه"],
@@ -190,7 +286,9 @@ async function handleUpdate(update) {
     chat_id: message.chat.id,
     text: `🏆 ${label}\n\n${leaderboard(period)}`
   });
-}const server = http.createServer((req, res) => {
+}
+
+const server = http.createServer((req, res) => {
   const url = new URL(
     req.url,
     `http://${req.headers.host || "localhost"}`
@@ -204,15 +302,7 @@ async function handleUpdate(update) {
 
   if (req.method === "GET" &&
       url.pathname === "/setup-webhook") {
-
     (async () => {
-      if (!process.env.RENDER_EXTERNAL_URL ||
-          !WEBHOOK_SECRET) {
-        throw new Error(
-          "RENDER_EXTERNAL_URL or WEBHOOK_SECRET missing"
-        );
-      }
-
       const result = await telegram("setWebhook", {
         url: `${process.env.RENDER_EXTERNAL_URL}/telegram-webhook`,
         secret_token: WEBHOOK_SECRET,
@@ -227,15 +317,12 @@ async function handleUpdate(update) {
       res.writeHead(500);
       res.end(error.message);
     });
-
     return;
   }
 
   if (req.method === "POST" &&
       url.pathname === "/telegram-webhook") {
-
-    if (WEBHOOK_SECRET &&
-        req.headers["x-telegram-bot-api-secret-token"]
+    if (req.headers["x-telegram-bot-api-secret-token"]
         !== WEBHOOK_SECRET) {
       res.writeHead(401);
       res.end("Unauthorized");
@@ -243,7 +330,6 @@ async function handleUpdate(update) {
     }
 
     let body = "";
-
     req.on("data", chunk => body += chunk);
 
     req.on("end", async () => {
@@ -257,21 +343,18 @@ async function handleUpdate(update) {
         res.end("Error");
       }
     });
-
     return;
   }
 
   if (req.method === "POST" &&
       url.pathname === "/send-quiz") {
-
     let body = "";
 
     req.on("data", chunk => body += chunk);
 
     req.on("end", async () => {
       try {
-        if (API_KEY &&
-            req.headers["x-api-key"] !== API_KEY) {
+        if (req.headers["x-api-key"] !== API_KEY) {
           res.writeHead(401);
           res.end("Unauthorized");
           return;
@@ -281,11 +364,10 @@ async function handleUpdate(update) {
 
         if (!data.question ||
             !Array.isArray(data.options) ||
-            data.options.length < 2 ||
-            data.options.length > 12 ||
+            data.options.length !== 4 ||
             !Number.isInteger(data.correct_option_id) ||
             data.correct_option_id < 0 ||
-            data.correct_option_id >= data.options.length) {
+            data.correct_option_id > 3) {
           res.writeHead(400);
           res.end("Invalid quiz data");
           return;
@@ -297,13 +379,11 @@ async function handleUpdate(update) {
           "Content-Type": "application/json"
         });
         res.end(JSON.stringify(result));
-
       } catch (error) {
         res.writeHead(500);
         res.end(error.message);
       }
     });
-
     return;
   }
 
